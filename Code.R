@@ -1,34 +1,49 @@
 rm(list=ls())
+dev.off(dev.list()["RStudioGD"])
 
 library(robustbase)
 library(parallel)
 
-# Simulation parameters
+# --- SIMULATION PARAMETERS --- #
 set.seed(0)
 n_train <- 100
 n_test <- 1000 
-n_sim <- 1000
-beta <- c(0, 1, 1, 1)
+n_sim <- 2 # Must be greater than 1
+beta <- c(0, 1) # First parameter is the intercept
 p <- length(beta) - 1
 
-# --- Single simulation step function --- #
-sim_step <- function(i, n_train, n_test, p, beta) {
+# --- SINGLE SIMULATION STEP FUNCTION --- #
+sim_step <- function(i, n_train, n_test, p, beta, plot = FALSE) {
   require(robustbase)
   
-  # ---Data Generation (Common Structures) --- #
+  # --- DATA GENERATION (COMMON STRUCTURES) --- #
   
-  # Generate Design Matrices once
-  X_train <- cbind(1, matrix(rnorm(n_train * p), ncol = p))
-  X_test  <- cbind(1, matrix(rnorm(n_test * p), ncol = p))
+  # Generate Design Matrices
   
-  # True Structural Part
-  y_true_train <- X_train %*% beta
-  y_test <- X_test %*% beta
+  # Probability and parameters of outliers
+  alpha_x <- 0.1 # Probability of being an outlier
+  m_x <- 5 # Mean of the outlier distribution
+  k_x <- 0.1 # Variance of the outlier distribution
   
-  # ---  Helper Function for Estimation --- #
+  # Generating Tukey-Huber contaminated X for train set
+  is_outlier_x <- rbinom(n_train, 1, alpha_x) 
+  X_train <- matrix(rnorm(n_train * p), ncol = p) # Non-contaminated X without intercept
+  X_cont <- matrix(rnorm(n_train * p, m_x, k_x), ncol = p) # Contamination
+  X_combined <- X_train * (1 - is_outlier_x) + X_cont * is_outlier_x
+  X_train_clean <- cbind(1, X_train) # Non-contaminated X with intercept
+  X_train_cont <- cbind(1, X_combined) # Contaminated X with intercept
+  
+  # Generating X for train set
+  X_test <- cbind(1, matrix(rnorm(n_test * p), ncol = p))
+  
+  # Generating y
+  y_true_train_clean <- X_train_clean %*% beta # y for non-contaminated X
+  y_true_train_cont <- X_train_cont %*% beta # y for contaminated x
+  y_test <- X_test %*% beta # y for testing data
+  
+  # ---  HELPER FUNCTION FOR ESTIMATION --- #
   
   # Reduces code duplication for OLS vs Robust steps
-  # TODO Add more estimators
   evaluate_models <- function(y_train, X_train) {
     # OLS
     b_ols <- .lm.fit(X_train, y_train)$coefficients
@@ -36,53 +51,86 @@ sim_step <- function(i, n_train, n_test, p, beta) {
     b_M <- coef(lmrob(y_train ~ 0 + X_train))
     # MM-estimator with huber psi
     b_MM <- coef(MASS::rlm(y_train ~ 0 + X_train), method = "M", psi = psi.huber)
-    # Trimmed least squares estimator
-    b_tls <- coef(ltsReg(y_train ~ X_train[, -1, drop = FALSE], nsamp = "best"))
+    # Least trimmed squares estimator
+    b_lts <- coef(ltsReg(y_train ~ X_train[, -1, drop = FALSE], nsamp = "best"))
     
     # Prediction & RMSE
     rmse_ols <- sqrt(mean((y_test - (X_test %*% b_ols))^2))
     rmse_M <- sqrt(mean((y_test - (X_test %*% b_M))^2))
     rmse_MM <- sqrt(mean((y_test - (X_test %*% b_MM))^2))
-    rmse_tls <- sqrt(mean((y_test - (X_test %*% b_tls))^2))
+    rmse_lts <- sqrt(mean((y_test - (X_test %*% b_lts))^2))
     
-    return(c(rmse_ols, rmse_M, rmse_MM, rmse_tls))
+    return(c(rmse_ols, rmse_M, rmse_MM, rmse_lts))
   }
   
-  # --- Normal Errors --- #
-  y_normal <- y_true_train + rnorm(n_train)
-  res_normal <- evaluate_models(y_normal, X_train)
+  # --- VERTICAL OUTLIER HYPERPARAMETERS --- #
+  alpha_y <- 0.1 # Probability of being an outlier
+  m_y <- -5 # Mean of the outlier distribution
+  k_y <- 0.1 # Variance of the outlier distribution
   
-  # --- Tukey-Huber Contaminated Errors --- #
-  # Parameters
-  alpha <- 0.1
-  m <- 0
-  k <- 10
+  # --- NO OUTLIERS --- #
   
   # Model
-  is_outlier <- rbinom(n_train, 1, alpha)
-  err_tukey <- rnorm(n_train) * (1 - is_outlier) + rnorm(n_train, m, k) * is_outlier
-  y_tukey <- y_true_train + err_tukey
+  y_no <- y_true_train_clean + rnorm(n_train)
+  res_no <- evaluate_models(y_no, X_train_clean)
   
-  res_tukey <- evaluate_models(y_tukey, X_train)
+  # --- VERTICAL OUTLIERS --- #
   
-  # --- t(1) distributed errors --- #
-  y_t1 <- y_true_train + rt(n_train, 1)
-  res_t1 <- evaluate_models(y_t1, X_train)
+  # Model
+  is_outlier_y <- rbinom(n_train, 1, alpha_y)
+  err_vo <- rnorm(n_train) * (1 - is_outlier_y) + rnorm(n_train, m_y, k_y) * is_outlier_y
+  y_vo <- y_true_train_clean + err_vo
   
-  # --- t(2) distributed errors --- #
-  y_t2 <- y_true_train + rt(n_train, 2)
-  res_t2 <- evaluate_models(y_t2, X_train)
+  res_vo <- evaluate_models(y_vo, X_train_clean)
   
-  # --- t(3) distributed errors --- #
-  y_t3 <- y_true_train + rt(n_train, 3)
-  res_t3 <- evaluate_models(y_t3, X_train)
+  # --- GOOD LEVERAGE POINTS --- #
   
+  # Model
+  y_glp<- y_true_train_cont + rnorm(n_train)
+  res_glp <- evaluate_models(y_glp, X_train_cont)
   
-  # --- Return Vector --- #
-  return(c(res_normal, res_tukey, res_t1, res_t2, res_t3))
+  # --- BAD LEVERAGE POINTS --- #
+  
+  # Model
+  is_outlier_y <- rbinom(n_train, 1, alpha_y)
+  err_blp <- rnorm(n_train)
+  y_blp<- y_true_train_clean + err_blp
+  
+  # Select those that are good leverage points
+  idx_bad <- which(y_true_train_cont > 3.5)
+  
+  # Turn the good leverage points into bad leverage points
+  y_blp <- y_true_train_cont
+  y_blp[idx_bad] <- y_blp[idx_bad] + 2*m_y
+  
+  y_blp <- y_blp + rnorm(n_train)
+  
+  res_blp <- evaluate_models(y_blp, X_train_cont)
+  
+
+  # --- PLOTTING SCATTER PLOTS  --- #
+  if (plot == TRUE) {
+    
+    # Set up the plots in a 2*2 grid
+    # par(mfrow = c(2, 2))
+    
+    # Plot graphs 
+    plot(X_train_clean[, -c(1)], y_no, xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+    plot(X_train_clean[, -c(1)], y_vo, xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+    plot(X_train_cont[, -c(1)], y_glp, xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+    plot(X_train_cont[, -c(1)], y_blp, xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+
+  }
+    
+  
+  # --- RETURN VECTOR --- #
+  return(c(res_no, res_vo, res_glp, res_blp))
 }
 
-# --- Execution --- #
+# --- EXECUTION --- #
+
+# Dummy run to plot the plots
+dummy_run <- sim_step(i = 1, n_train = n_train, n_test = n_test, p = p, beta = beta, plot = TRUE)
 
 # Detect cores (Use n-1 to keep system responsive)
 num_cores <- parallel::detectCores(logical = FALSE) - 1
@@ -99,16 +147,16 @@ runtime <- system.time({
 
 stopCluster(cl)
 
-# --- Formatting Results --- #
+# --- FORMATTING RESULTS --- #
 
 # Transpose matrix for ease of extraction of data
 results_t <- t(results_matrix)
 
 # Define scenarios in order they appear in results_t
-scenarios <- c("Normal", "Tukey-Huber", "t1", "t2", "t3")
+scenarios <- c("No Outliers", "Vertical Outliers", "Good Leverage Points", "Bad Leverage Points")
 
 # Define standard column names for estimators
-col_names <- c("RMSE_OLS", "RMSE_M", "RMSE_MM", "RMSE_TLS")
+col_names <- c("RMSE_OLS", "RMSE_M", "RMSE_MM", "RMSE_lts")
 n_est <- length(col_names)
 
 # Iterate, extract, and structure final dataframe
@@ -161,5 +209,6 @@ scenarios <- unique(summary_stats$Scenario)
 matrix_list <- lapply(scenarios, create_ratio_matrix, df = summary_stats)
 names(matrix_list) <- scenarios
 
+# --- PRINTING RESULTS --- #
 print(runtime)
 print(matrix_list)
