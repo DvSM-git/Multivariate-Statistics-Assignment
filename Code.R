@@ -112,13 +112,13 @@ sim_step <- function(i, n_train, n_test, p, beta, plot = FALSE) {
   if (plot == TRUE) {
     
     # Set up the plots in a 2*2 grid
-    # par(mfrow = c(2, 2))
+    par(mfrow = c(2, 2))
     
     # Plot graphs 
-    plot(X_train_clean[, -c(1)], y_no, xlab = "", ylab = "", xaxt = "n", yaxt = "n")
-    plot(X_train_clean[, -c(1)], y_vo, xlab = "", ylab = "", xaxt = "n", yaxt = "n")
-    plot(X_train_cont[, -c(1)], y_glp, xlab = "", ylab = "", xaxt = "n", yaxt = "n")
-    plot(X_train_cont[, -c(1)], y_blp, xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+    plot(X_train_clean[, -c(1)], y_no, xlab = "", ylab = "", xaxt = "n", yaxt = "n", main = "No Outlier")
+    plot(X_train_clean[, -c(1)], y_vo, xlab = "", ylab = "", xaxt = "n", yaxt = "n", main = "Vertical Outlier")
+    plot(X_train_cont[, -c(1)], y_glp, xlab = "", ylab = "", xaxt = "n", yaxt = "n", main = "Good Leverage Point")
+    plot(X_train_cont[, -c(1)], y_blp, xlab = "", ylab = "", xaxt = "n", yaxt = "n", main = "Bad Leverage Point")
 
   }
     
